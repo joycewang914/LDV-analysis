@@ -1,0 +1,285 @@
+---
+title: "Finding lineage-defining variants in Michigan nursing home VREfm"
+output: html_document
+---
+
+Detection of multi-strain colonization using lineage-defining variants curated from sequenced clones will be highly robust to sequencing errors and false-positive variant calls due to the strict criteria that known sets of variants at specific positions be present to confirm the presence of a strain.
+
+Ali has generated gubbins-filtered alignment and tree in:
+/nfs/esnitkin/Project_VRE_metagenomics_analysis/Sequence_data/output_files/2021_04_09_VREfm_variant_calling/2021_04_12_15_54_54_core_results/gubbins/
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(RColorBrewer)
+library(vioplot)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+vrefm = read.dna("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta", format = "fasta")
+
+var_pos = read.csv("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.summary_of_snp_distribution.csv", stringsAsFactors = F, header = T, skip = 3)
+var_pos = t(var_pos)
+colnames(var_pos) = gsub(" ", "", as.character(var_pos["POS", ]))
+
+var_pos2 = var_pos[grep("CHROM|POS|ID|REF|ALT|QUAL|FILTER|INFO|FORMAT", x = rownames(var_pos), invert = T),]
+rownames(var_pos2) = gsub("X", "", rownames(var_pos2))
+rownames(var_pos2) = gsub(".", "-", rownames(var_pos2), fixed = T)
+rownames(var_pos2)[rownames(var_pos2) %in% "CP003351-1"] = "CP003351.1"
+
+iqtree = read.iqtree("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+phylo = iqtree@phylo
+phylo = drop.tip(phylo, c("4999-3085-0-HVRE", "CP003351.1"))
+var_pos2 = var_pos2[phylo$tip.label,]
+
+# remove N and -
+var_pos2 = var_pos2[,apply(var_pos2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+```
+
+```{r generate subtrees}
+# file = "../figures/VREfm_iqtree_ML.pdf"
+# pdf(file)
+par(mar = c(1, 1, 1, 1))
+plot(phylo, cex = .25)
+
+# dev.off()
+
+vrefm_st = subtrees(phylo)
+
+tree_vars = lapply(vrefm_st, FUN = function(l){
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+tree_nodes = 1:length(vrefm_st) # skip first subtree because there are no lineage-defining variants for the overall tree
+
+tree_pairs = list()
+
+for (s in tree_nodes){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_tree = tree_vars[[s]]
+  
+  test_tree_uniq_var = sapply(names(test_tree), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_tree[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_tree_uniq_var) == 0){tree_pairs[[as.character(s)]] = NULL}else{
+  tree_pairs[[as.character(s)]] = names(which(test_tree_uniq_var))}
+}
+
+shared_mat = matrix(NA, nrow = nrow(var_pos2), ncol = length(unique(unlist(tree_pairs[-1]))), dimnames = list(phylo$tip.label, as.character(sort(as.numeric(unique(unlist(tree_pairs[-1])))))))
+
+# remove the first subtree since it's the whole tree!
+for (p in names(which(unlist(lapply(tree_pairs[-1], length)) > 0))){print(p)
+  
+  isolates = vrefm_st[[as.numeric(p)]]$tip.label
+  snv_pos = tree_pairs[[p]]
+  snv = apply(var_pos2[isolates, snv_pos, drop = F], 2, unique)
+
+  shared_mat[isolates, snv_pos] = matrix(rep(snv, each =  length(isolates)), byrow = F, ncol = length(snv_pos))
+}
+
+
+shared_mat2 = apply(shared_mat, 1:2, FUN = function(m){
+    if (is.na(m)){n = 0}
+    if (m %in% "A"){n = 1}
+    if (m %in% "T"){n = 2}
+    if (m %in% "C"){n = 3}
+    if (m %in% "G"){n = 4}
+  n
+})
+```
+
+
+```{r Combine tree with heatmap}
+phy <- ggtree(phylo) 
+
+shared_df = as.data.frame(shared_mat, stringsAsFactors = F)
+
+cols=c("steelblue", "firebrick", "darkgreen", "orange", "white")
+names(cols) = c("A", "T", "C", "G")
+
+# pdf("../figures/ggrandom.pdf")
+# 
+# gheatmap(phy, shared_df, offset=0, width=1, font.size=.5, colnames = F, legend_title="Lineage-defining\nmakrer") + scale_fill_manual(values=cols) 
+
+# dev.off()
+```
+Evan's feedback:
+April-30-2021 - A few thoughts:
+1. Can you make a histogram of number of LDVs per subtree? Just curious if there are typically more than one or two.
+2. Do you think there is a way to visualize which subtrees have LDVs versus which do not?
+3. Following on the previous point, I wonder if there is some way to get a sense of the resolution provided by LDVs. A few possibilities: i) for each isolate determine the smallest subtree that it belongs to that has at least one LDV (i.e. how small are the groups we are creating) and ii) for each isolates smallest LDV-defined subtree, determine the maximum genetic distance to another isolate in the subtree (i.e. what is our genetic distance resolution using LDVs)?
+
+May-1-2021 - Oh - one other thing, can we also see what fraction of tips have variants that are unique to them?
+
+```{r LDVs by subtrees}
+file = paste0("../figures/", format(Sys.time(), "%Y-%m-%d"), "_LDV_histograms.pdf")
+pdf(file)
+
+ldvs_per_tree = unlist(lapply(tree_pairs[-1], length))
+ldvs_per_tree_wo_zero = ldvs_per_tree[!ldvs_per_tree %in% 0]
+
+hist(ldvs_per_tree_wo_zero, xlim = c(0, 40), breaks = 40, xlab = "", main = paste0("Number of LDVs of non-zero LDV subtrees\nMedian = ", median(ldvs_per_tree_wo_zero)))
+
+dev.off()
+```
+
+
+# Useful code for quickly checking where isolates are:
+tree_cols = sapply(phylo$tip.label, FUN = function(i){ifelse(i %in% vrefm_st[[106]]$tip.label, "red", "black")})
+plot(phylo, tip.color = tree_cols, show.node.label=TRUE, cex =.5)
+
+
+
+```{r characterize genetic distances within subtrees}
+# Subtrees with at least one LDV (not including the first tree)
+LDV_st = as.numeric(names(which(unlist(lapply(tree_pairs[2:length(tree_pairs)], length)) > 0)))
+
+smallest_st = sapply(phylo$tip.label, FUN = function(p){
+  p_containing = sapply(LDV_st, FUN = function(l){
+    p %in% vrefm_st[[l]]$tip.label
+  })
+  st_length = sapply(which(p_containing), FUN = function(pc){
+    length(vrefm_st[[LDV_st[pc]]]$tip.label)
+  })
+  
+  names(st_length) = LDV_st[p_containing]
+  names(which.min(st_length))
+})
+
+# label with clade
+# label subtrees with only one isolate with "*"
+# good resource: http://www.randigriffin.com/2017/05/11/primate-phylogeny-ggtree.html
+library(randomcoloR)
+n <- length(unique(smallest_st))
+palette <- distinctColorPalette(n)
+names(palette) = unique(smallest_st)
+
+phylo_cols = sapply(phylo$tip.label, FUN = function(h){
+  palette[smallest_st[h]]})
+
+phylo_star = phylo
+phylo_star$tip.label = sapply(phylo$tip.label, FUN = function(s){
+  ifelse(sum(smallest_st %in% smallest_st[s]) == 1, "*", "")
+})
+
+file = paste0("../figures/", format(Sys.time(), "%Y-%m-%d"), "_smallest_subtree.pdf")
+pdf(file, onefile = T)
+
+# first plot with sample name
+plot(phylo, show.tip.label = T, tip.color  = phylo_cols, cex = 0.25)
+
+# second plot (no sample name)
+plot(phylo_star, show.tip.label = T, main = "MI NH VREfm\nlabeled by subtrees\n(one-isolate subtrees labeled with *)")
+tiplabels(col = phylo_cols, pch = 16, cex = 0.5, offset = 0.00)
+legend("bottomright", fill =names(sort(table(phylo_cols))), legend = sort(table(phylo_cols)), xpd = T, inset =0, border = F, bty = "n", title = "ST (N of isolates)",  ncol = 3, cex = .75)
+
+
+dev.off()
+
+```
+
+```{r within-st snv distance}
+
+vrefm_dna = vrefm
+vrefm_dna = vrefm_dna[rownames(vrefm_dna) %in% rownames(var_pos2), ]
+vrefm_dna = vrefm_dna[,apply(as.character(vrefm_dna), 2, FUN = function(x){
+  ; sum(as.character(x) %in% c("n", "-")) == 0})]
+
+vrefm_snv_dist = dist.dna(vrefm_dna, as.matrix = T, model = "N")
+
+vrefm_snv_dist_bwtn_st = sapply(names(which(table(smallest_st) > 1)), FUN = function(s){
+  same_st = names(smallest_st[smallest_st %in% s])
+  if (length(same_st) == 1){dist = 0}else{
+  same_st_pair = t(combn(same_st, 2))
+  dist = apply(same_st_pair, 1, FUN = function(a){vrefm_snv_dist[a[1], a[2]]})}
+  max(dist)
+})
+
+file = paste0("../figures/", format(Sys.time(), "%Y-%m-%d"), "_within-subtree_histograms.pdf")
+pdf(file)
+
+hist(vrefm_snv_dist_by_st, xlim = c(0, 60), breaks = 60, xlab = "", main = paste0("Max SNV distance in non-monoisolate subtrees\nMedian = ", median(vrefm_snv_dist_by_st)))
+
+dev.off()
+```
+
+```{r between-st snv distance}
+
+vrefm_snv_dist_bwtn_mat = matrix(0, nrow = length(unique(smallest_st)), ncol = length(unique(smallest_st)), dimnames = list(unique(smallest_st), unique(smallest_st)))
+
+for (i in rownames(vrefm_snv_dist_bwtn_mat)){print(i)
+  for (j in colnames(vrefm_snv_dist_bwtn_mat)){print(j)
+    
+    isolates_i = names(smallest_st[smallest_st %in% i])
+    isolates_j = names(smallest_st[smallest_st %in% j])
+
+    isolates = unique(c(isolates_i, isolates_j))
+    
+    if (i == j & length(isolates) == 1){vrefm_snv_dist_bwtn_mat[i,j] = 0}else{
+    
+    isolate_pairs = t(combn(isolates,2))
+    
+    isolate_pair_snv_dist = apply(isolate_pairs, 1, FUN = function(k){
+      vrefm_snv_dist[k[1], k[2]]
+    })
+    
+    vrefm_snv_dist_bwtn_mat[i,j] = max(isolate_pair_snv_dist)}
+  }
+}
+
+
+temp_mat = vrefm_snv_dist_bwtn_mat
+
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_max_SNV_dist_btwn_within_STs.pdf', sep = "");
+pdf(file)
+rownames(temp_mat) = colnames(temp_mat) = NULL
+
+heatmap3(temp_mat, scale = "none", keep.dendro = TRUE,
+        RowSideColors = palette, ColSideColors = palette,
+        ColSideLabs = "Subtree", RowSideLabs = "Subtree",
+        cexRow = .5,
+        cexCol = .5)
+
+dev.off()
+
+```
+
+5-3-2021:
+
+Thanks Joyce! A few questions:
+1) For isolates that are not in their own subtree, does that mean they don’t have any variants that are unique to them? Or, is this more a reflection of the tree structure as in your example of the 3 isolates broken into 2 and 1?
+2) What if you require the smallest subtree for each isolate to be greater than size 1? So, in your example two of the isolates would have a smallest subtree of size 2, and the other isolate would have a smallest subtree of size 3.
+3) Could you also have a tree with a heatmap next to it indicating the max distance to another isolate in its smallest subtree? Just curious where the large distances are coming from in your histogram.
+
+```{r redefine smallest subtree}
+names(smallest_st[smallest_st %in% "99"])
+
+single_tips = names(smallest_st[smallest_st %in% names(table(smallest_st)[table(smallest_st) %in% 1])])
+
+
+
+
+```

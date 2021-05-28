@@ -1,0 +1,118 @@
+---
+title: "Finding lineage-defining variants in Michigan nursing home VREfm"
+output: html_document
+---
+
+Detection of multi-strain colonization using lineage-defining variants curated from sequenced clones will be highly robust to sequencing errors and false-positive variant calls due to the strict criteria that known sets of variants at specific positions be present to confirm the presence of a strain.
+
+Ali has generated gubbins-filtered alignment and tree in:
+/nfs/esnitkin/Project_VRE_metagenomics_analysis/Sequence_data/output_files/2021_04_09_VREfm_variant_calling/2021_04_12_15_54_54_core_results/gubbins/
+
+There are promising LDVs in each subtree, and after discussing with Evan, it seems that it's better to use a subtree-centric approach to assign isolates, rather than the reverse.
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+vrefm = read.dna("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta", format = "fasta")
+
+var_pos = read.csv("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.summary_of_snp_distribution.csv", stringsAsFactors = F, header = T, skip = 3)
+var_pos = t(var_pos)
+colnames(var_pos) = gsub(" ", "", as.character(var_pos["POS", ]))
+var_pos2 = var_pos[grep("CHROM|POS|ID|REF|ALT|QUAL|FILTER|INFO|FORMAT", x = rownames(var_pos), invert = T),]
+rownames(var_pos2) = gsub("X", "", rownames(var_pos2))
+rownames(var_pos2) = gsub(".", "-", rownames(var_pos2), fixed = T)
+rownames(var_pos2)[rownames(var_pos2) %in% "CP003351-1"] = "CP003351.1"
+
+var_pos3 = var_pos2 # save a var_pos copy with reference genome
+
+iqtree = read.iqtree("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+iq_phylo = iqtree@phylo
+
+phylo = iqtree@phylo
+phylo = drop.tip(phylo, c("4999-3085-0-HVRE", "CP003351.1"))
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+var_pos2 = var_pos2[phylo$tip.label,]
+
+# remove N and -
+var_pos2 = var_pos2[,apply(var_pos2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+```
+
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) # skip first subtree because there are no lineage-defining variants for the overall tree
+
+vrefm_st_ldv = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv[[as.character(s)]] = names(which(test_st_uniq_var))}
+}
+
+# save as a text file for Ali
+vrefm_st_ldv_txt = unlist(vrefm_st_ldv)
+write.table(x = sort(as.numeric(vrefm_st_ldv_txt)), file = "../figures/2021-05-07_VREfm_LDV.txt", quote = F, row.names = F, col.names = F)
+
+# isolate specific LDVs if ever needed:
+# i = "5261-4089-0-RVRE"
+# 
+# ldv_i_ind = which(sapply(as.numeric(ldv_ind), FUN = function(l){
+#     i_present = i %in% vrefm_st[[l]]$tip.label}))
+# ldv_i = ldv_ind[ldv_i_ind]
+# vrefm_st_ldv_txt = sort(as.numeric(unlist(vrefm_st_ldv[as.numeric(ldv_i[!ldv_i %in% "1"])])))
+# 
+# write.table(x = vrefm_st_ldv_txt, file = "../figures/2021-05-07_VREfm_LDV.txt", quote = F, row.names = F, col.names = F)
+```
+
+Ali finished variant calling pipeline:
+/nfs/esnitkin/Project_VRE_metagenomics_analysis/Analysis/2021_05_07_LDV_test/5261-4089-0-RVRE_same_assembly_varcall_result/LDV_abund_frequency.csv
+
+```{r}
+output = read.csv("../genome_alignments/LDV_abund_frequency.csv", header = T)
+
+ind = which(unlist(lapply(vrefm_st, FUN = function(x){sum(x$tip.label %in% "5261-4089-0-RVRE") > 0})))
+st_ind = unlist(vrefm_st_ldv[ind])
+
+output[output$LDV.Position %in% names(which(apply(var_pos3[c("CP003351.1", "5261-4089-0-RVRE"), st_ind], 2, FUN = function(x){x[1] != x[2]}))), ]
+```
