@@ -3,6 +3,8 @@
 # if done manually, this is what the command looks like:
 # download /scratch/esnitkin_root/esnitkin/apirani/Project_VRE_metagenomics_analysis/2021_06_03_LDV_Simulation/data/Part1/0.001perc/A_varcall_result/A_LDV_abund_frequency.csv ../../genome_alignments/MI_simulations "specific output name"
 
+# Want to rename files as they're downloaded to make file names more informative (e.g. which strain(s) are spiked at what percentage relative to metagenome reads)
+
 import os, argparse,re
 
 parser = argparse.ArgumentParser(description='This script takes a file')
