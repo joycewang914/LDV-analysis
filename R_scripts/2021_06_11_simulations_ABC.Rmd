@@ -1,0 +1,233 @@
+---
+title: "Benchmarking LDV algorithms with simulated scenarios"
+output: html_document
+---
+
+Detection of multi-strain colonization using lineage-defining variants curated from sequenced clones will be highly robust to sequencing errors and false-positive variant calls due to the strict criteria that known sets of variants at specific positions be present to confirm the presence of a strain.
+
+Previously I have identified ~385 LDVs that differentiate nodes on the MI NH VREfm phylogeny.
+Here we are testing additional scenarios:
+
+To this end, can you please set up another set of simulations using three strains and the same metgenome sample (M):
+6648-4103-0-HVRE (A)
+5261-4089-0-RVRE (B)
+1638-6008-0-RVRE (C)
+Simulations:
+A in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+B in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+C in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+A + B in M at 10% abundance (5% each)
+A + C in M at 10% abundance (5% each)
+B + C in M at 10% abundance (5% each)
+A + B + C in M at 10% abundance (3.3% each)
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+library(vcfR)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+vrefm = read.dna("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta", format = "fasta")
+
+var_pos = read.csv("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.summary_of_snp_distribution.csv", stringsAsFactors = F, header = T, skip = 3)
+var_pos = t(var_pos)
+colnames(var_pos) = gsub(" ", "", as.character(var_pos["POS", ]))
+
+var_pos2 = var_pos[grep("CHROM|POS|ID|REF|ALT|QUAL|FILTER|INFO|FORMAT", x = rownames(var_pos), invert = T),]
+rownames(var_pos2) = gsub("X", "", rownames(var_pos2))
+rownames(var_pos2) = gsub(".", "-", rownames(var_pos2), fixed = T)
+rownames(var_pos2)[rownames(var_pos2) %in% "CP003351-1"] = "CP003351.1"
+
+iqtree = read.iqtree("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+# remove N and -
+var_pos2 = var_pos2[,apply(var_pos2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+
+# Load in data from different scenarios
+rel_ab_list = list()
+rel_ab_list[["A0.001"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["A0.01"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["A0.1"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["A1"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["A5"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["A10"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["B0.001"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.01"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B5"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["B10"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["C0.001"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["C0.01"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["C0.1"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["C1"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["C5"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["C10"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["AB"]] = read.csv("../genome_alignments/MI_simulations/A_B_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["AC"]] = read.csv("../genome_alignments/MI_simulations/A_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["BC"]] = read.csv("../genome_alignments/MI_simulations/B_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["ABC"]] = read.csv("../genome_alignments/MI_simulations/A_B_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+
+```
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+vrefm_st_ldv = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+```
+
+
+If I knew nothing about this spiked isolate, how would I go about to finding its closest node?
+Use a different colour for nodes without LDVs
+```{r}
+rel_ab_list_id = names(rel_ab_list)
+
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_simulations_ABC.pdf', sep = "");
+pdf(file)
+
+for (a in rel_ab_list_id){print(a)
+  
+  if (grepl("A0", a)){i = "6648-4103-0-HVRE"; plot_title = paste0(i, "\n(", gsub("A", "", a), "%)")}
+  if (grepl("A1", a)){i = "6648-4103-0-HVRE"; plot_title = paste0(i, "\n(", gsub("A", "", a), "%)")}
+  if (grepl("A5", a)){i = "6648-4103-0-HVRE"; plot_title = paste0(i, "\n(", gsub("A", "", a), "%)")}
+  if (grepl("A10", a)){i = "6648-4103-0-HVRE"; plot_title = paste0(i, "\n(", gsub("A", "", a), "%)")}
+  
+  if (grepl("B0", a)){i = "5261-4089-0-RVRE"; plot_title = paste0(i, "\n(", gsub("B", "", a), "%)")}
+  if (grepl("B1", a)){i = "5261-4089-0-RVRE"; plot_title = paste0(i, "\n(", gsub("B", "", a), "%)")}
+  if (grepl("B5", a)){i = "5261-4089-0-RVRE"; plot_title = paste0(i, "\n(", gsub("B", "", a), "%)")}
+  if (grepl("B10", a)){i = "5261-4089-0-RVRE"; plot_title = paste0(i, "\n(", gsub("B", "", a), "%)")}
+
+  if (grepl("C0", a)){i = "1638-6008-0-RVRE"; plot_title = paste0(i, "\n(", gsub("C", "", a), "%)")}
+  if (grepl("C1", a)){i = "1638-6008-0-RVRE"; plot_title = paste0(i, "\n(", gsub("C", "", a), "%)")}
+  if (grepl("C5", a)){i = "1638-6008-0-RVRE"; plot_title = paste0(i, "\n(", gsub("C", "", a), "%)")}
+  if (grepl("C10", a)){i = "1638-6008-0-RVRE"; plot_title = paste0(i, "\n(", gsub("C", "", a), "%)")}
+
+  if (grepl("AB", a)){i = c("6648-4103-0-HVRE", "5261-4089-0-RVRE"); plot_title = paste0(i[1], " + ", i[2])}
+  if (grepl("BC", a)){i = c("5261-4089-0-RVRE","1638-6008-0-RVRE"); plot_title = paste0(i[1], " + ", i[2])}
+  if (grepl("AC", a)){i = c("6648-4103-0-HVRE", "1638-6008-0-RVRE"); plot_title = paste0(i[1], " + ", i[2])}
+  if (grepl("ABC", a)){i = c("6648-4103-0-HVRE", "5261-4089-0-RVRE", "1638-6008-0-RVRE"); plot_title = paste0(i[1], " + ", i[2], " + ", i[3])}
+  
+  print(plot_title)
+  
+  temp_df = rel_ab_list[[a]]
+  
+  colnames(temp_df) = c("LDV Position", "Strain Position", "Ref Allele", "Ref Allele Freq", "ALT Allele", "ALT Allele Freq")
+  
+  temp_df = temp_df[nchar(temp_df$`Ref Allele`) == 1 & nchar(temp_df$`ALT Allele`) == 1,]
+  
+  # subset to only LDV-associated positions
+  ldv_temp_df = temp_df[temp_df$`LDV Position` %in% vrefm_st_ldv, ]
+  
+  # reorganize df to merge duplicate positions
+  
+  temp_df_pos = sapply(unique(ldv_temp_df$`LDV Position`), FUN = function(l){
+    
+  alleles = c(structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele Freq"], names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele Freq"], names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$`LDV Position`)
+  
+test_node = lapply(vrefm_st_ldv_id, FUN = function(v){print(v)
+  test_pos = sapply(names(v), FUN = function(p){print(p)
+   grepl(v[p], temp_df_pos[p])
+  })
+  sum(unlist(test_pos), na.rm = T) / length(unlist(test_pos))
+})
+
+
+# Then repeat the tree exercise to see where the nodes are
+test_group_clade = names(which(unlist(lapply(test_node, FUN = function(n){n > 0}))))
+test_phylo_group_clade = unlist(lapply(vrefm_st[as.numeric(test_group_clade)], FUN = function(x){x$name}))
+
+test_node_ind = unlist(test_node)
+test_node_ind = test_node_ind[!is.na(test_node_ind) & test_node_ind > 0]
+
+nodecol_ind = structure(colorRampPalette(c("grey", "red"))(101), names = 0:100)
+nodecol = rep("#808080", phylo$Nnode)
+nodecol[as.numeric(names(test_node_ind))] = unlist(sapply(test_node_ind, FUN = function(d){nodecol_ind[as.character(round(d*100))]}))
+
+tipcol = rep("black", length(phylo$tip.label))
+tipcol[phylo$tip.label %in% i] = "orange"
+
+# file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_5261-Aus0004-varcall-with-mg-with_node.pdf', sep = "");
+# pdf(file)
+# plot(phylo, use.edge.length = T,edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16)
+# tiplabels(pch = 21, col = tipcol, cex = .5, bg = tipcol)
+# nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = nodecol)
+# legend("right", legend  = as.numeric(names(nodecol_ind))*100,
+#          fill = nodecol_ind, title = "% LDVs\ndetected", border = FALSE, bty = "n", cex = 1, inset =0, xpd = TRUE)
+
+plot(phylo, use.edge.length = F,edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = plot_title)
+tiplabels(pch = 21, col = tipcol, cex = .5, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = nodecol)
+legend("bottom", legend  = seq(0, 100, by = 10),
+         fill = nodecol_ind[as.character(seq(0, 100, by = 10))], title = "% LDVs detected", 
+       border = FALSE, bty = "n", cex = 1,
+       inset = -.1, xpd = TRUE,  ncol = 5)
+
+}
+
+dev.off()
+``` 
