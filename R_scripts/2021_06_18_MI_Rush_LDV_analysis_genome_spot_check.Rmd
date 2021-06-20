@@ -1,0 +1,361 @@
+---
+title: "Analyze Rush metagenomes to see if we can detect VREfm"
+output: html_document
+---
+
+Prior analyses generated phylogenies with LDVs and target genomes. We found several discordant samples:
+MBR00267 (random non-specific nodes lighting up), 
+MBR01454 (correct nodes light up, but also a bunch of random ones) 
+MBR03024 (most expected nodes light up, but a few don't).
+
+Ali has made new LDV frequency files with allele read depths 
+
+
+```{r load packages}
+library(readxl)   
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+Read in metadata
+```{r load data, include=FALSE}
+rush_mgen = read.csv("../Rush_meta_genomics_sample_lookup/2021-06-16_VRE_sampleID_metagen_append_mg_seqs.csv", header = T,stringsAsFactors = F)
+
+rush_gen = read.csv("../Rush_meta_genomics_sample_lookup/96 well map (2).csv", header = T, stringsAsFactors = F)
+
+iqtree = read.iqtree("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+rush_platemap = read.csv("../Rush_meta_genomics_sample_lookup/Final Workbook WGS - MiSeq M021217 2021 Run 496 - Snitkin Graifman_platemap.csv", stringsAsFactors = F,  row.names = 1, header = T)
+colnames(rush_platemap) = gsub("X", "", colnames(rush_platemap))
+rush_platemap = gsub("_", "-", as.matrix(rush_platemap))
+
+rush_gen$row = rownames(rush_gen)
+rush_gen$genome_name = apply(rush_gen, 1, FUN = function(x){
+  if (length(rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"], "Patient.ID"]) == 1){new_name = x["Patient.ID"]}else{
+    rows = rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"],]
+    new_name = paste0(x["Patient.ID"], "-", which(rownames(rows) %in% x['row']))
+  }
+  new_name
+})
+rush_gen$real_well_position = c(apply(rush_platemap[1:3, ], 1, FUN = function(x){x}))[1:nrow(rush_gen)]
+rush_gen$real_well_position[25] = "715-3"
+
+```
+
+Read in WGS data
+```{r}
+dna = read.dna("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.filtered_polymorphic_sites.fasta", format = "fasta")
+var = read.table("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.summary_of_snp_distribution.vcf")
+
+dna2 = dna
+colnames(dna2) = var$V2
+dna2 = as.character(dna2)
+dna2 = apply(dna2, 1:2, toupper)
+var_pos2 = dna2[,apply(dna2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+# rownames(var_pos2)[rownames(var_pos2) %in% "715"] = "715-3"
+
+```
+
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){print(l)
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+nodes_with_LDVs = names(which(lapply(vrefm_st_ldv_id, length) > 0))
+nodes_without_LDVs = vrefm_st_ind[!vrefm_st_ind %in% nodes_with_LDVs]
+
+vrefm_st_ldv = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+```
+
+Read in MG data
+```{r}
+filenames <- list.files("../genome_alignments/MBR/read_depths/", pattern="*.csv", full.names=TRUE)
+ldf <- lapply(filenames, FUN = function(x){read.csv(x, stringsAsFactors = F, header = T)})
+names(ldf) = sapply(sapply(filenames, FUN = function(x){strsplit(x, "/")[[1]][6]}), FUN = function(y){strsplit(y, "_")[[1]][1]})
+```
+
+Process LDV matrices
+Plot two trees side by side: expected and observed nodes highlighted
+```{r}
+# file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_Rush_metagenome_LDV_allele_seq_depth.pdf', sep = "");
+# pdf(file)
+
+for (d in names(ldf)){
+  
+  m = ldf[[d]]
+  
+  temp_df = m[nchar(m$Reference.Allele) == 1 & nchar(m$Reference.Allele) == 1,]
+  
+  ldv_temp_df = temp_df[temp_df$LDV.Position %in% vrefm_st_ldv, ]
+  
+  if (rush_mgen[rush_mgen$SampleID %in% d, "VREdetect"] %in% "VRE"){
+    plot_title = paste0(d, " (Positive)\nTotal reads at ALT allele: ", sum(temp_df$ALT.Allele.Depth))}
+  
+  # genome associated with MG sample
+  i = rush_gen[grep(d, rush_gen$Sample.ID), "real_well_position"]
+  
+  i_present_st = intersect(which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(i, x$tip.label)) > 0}))), nodes_with_LDVs)
+  
+  i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[i_present_st]), names =
+                  sapply(names(unlist(vrefm_st_ldv_id[i_present_st])), FUN = function(x){
+                  strsplit(x, ".", fixed = T)[[1]][2]
+                  }))
+  
+
+
+  temp_df_pos = sapply(unique(ldv_temp_df$LDV.Position), FUN = function(l){
+    
+    alleles = c(structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele.Frequency"], 
+                        names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele.Frequency"], 
+                            names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$LDV.Position)
+  
+  test_node = lapply(vrefm_st_ldv_id, FUN = function(v){print(v)
+    test_pos = sapply(names(v), FUN = function(p){print(p)
+    grepl(v[p], temp_df_pos[p])
+    })
+    test_pos
+  })
+  
+  observed_ldvs = sapply(names(which(unlist(test_node) > 0)), FUN = function(x){strsplit(x, ".", fixed = T)[[1]][2]})
+  
+  names(observed_ldvs) = sapply(observed_ldvs, FUN = function(x){
+    ifelse(x %in% names(i_specific_ldvs), "Correct", "Random")
+  })
+
+  observed_ldvs_depth = rbind(observed_ldvs, sapply(observed_ldvs, FUN = function(x){ldv_temp_df[ldv_temp_df$LDV.Position %in% x & ldv_temp_df$ALT.Allele %in% unlist(vrefm_st_ldv_id)[grep(x, unlist(vrefm_st_ldv))], "ALT.Allele.Depth"]}))
+
+
+m = rbind(cbind(rbind(c(1, 1), c(1, 1)), rbind(c(2, 2), c(2, 2))), c(3, 3, 4, 4))
+layout(m)
+par(mar = c(6, 3, 5, 3))
+  
+# Tip should be constant
+tipcol = rep("transparent", length(phylo$tip.label))
+tipcol[phylo$tip.label %in% i] = "orange"
+
+
+# Plot expected nodes
+expected_nodecol = rep("grey", phylo$Nnode)
+expected_nodecol[as.numeric(i_present_st)] = "red"
+expected_nodecol[nodes_without_LDVs] = "black"
+
+plot(phylo, use.edge.length = F, edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = paste0(plot_title, "\n", "Expected nodes"))
+tiplabels(pch = 21, col = tipcol, cex = 1, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = expected_nodecol)
+
+# Plot observed nodes
+obs_node_ind = names(which(unlist(lapply(test_node[lapply(test_node, length) > 0], FUN = function(x){sum(x)})) > 0))
+obs_nodecol = rep("grey", phylo$Nnode)
+obs_nodecol[as.numeric(obs_node_ind)] = "red"
+obs_nodecol[nodes_without_LDVs] = "black"
+
+plot(phylo, use.edge.length = F, edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = paste0(plot_title, "\n", "Observed nodes"))
+tiplabels(pch = 21, col = tipcol, cex = 1, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = obs_nodecol)
+
+if (sum(colnames(observed_ldvs_depth) %in% "Correct") > 0){
+hist(as.numeric(observed_ldvs_depth[2,colnames(observed_ldvs_depth) %in% "Correct"]),  col = "yellow", main = "Correct", xlab = "Reads / LDV position", ylab = "Frequency")}
+if (sum(colnames(observed_ldvs_depth) %in% "Random") > 0){
+  hist(as.numeric(observed_ldvs_depth[2,colnames(observed_ldvs_depth) %in% "Random"]), col = "blue", main = "Non-specific", xlab = "Reads / LDV position", ylab = "Frequency")}
+
+
+}
+# dev.off()
+```
+
+
+Remove LDVs with fewer than 4 reads
+Process LDV matrices
+Plot three trees side by side: expected (all), observed (all), observed (filtered)
+Read in MG data with read depths
+```{r}
+filenames2 <- list.files("../genome_alignments/MBR/read_depths/", pattern="*.csv", full.names=TRUE)
+ldf2 <- lapply(filenames2, FUN = function(x){read.csv(x, stringsAsFactors = F, header = T)})
+names(ldf2) = sapply(sapply(filenames2, FUN = function(x){strsplit(x, "/")[[1]][6]}), FUN = function(y){strsplit(y, "_")[[1]][1]})
+```
+
+```{r}
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_Rush_metagenome_LDV_allele_seq_depth_filtered_4_reads.pdf', sep = "");
+pdf(file)
+
+for (d in names(ldf2)){print(d)
+  
+  if (rush_mgen[rush_mgen$SampleID %in% d,"VREdetect"] %in% c("neg", "No indication")){next}
+  
+  m = ldf2[[d]]
+  
+  temp_df = m[nchar(m$Reference.Allele) == 1 & nchar(m$Reference.Allele) == 1,]
+  
+  # All possible LDV positions 
+  ldv_temp_df = temp_df[temp_df$LDV.Position %in% vrefm_st_ldv, ]
+  
+  if (rush_mgen[rush_mgen$SampleID %in% d, "VREdetect"] %in% "VRE"){
+    plot_title = paste0(d, " (Positive)\nTotal reads at ALT allele: ", sum(temp_df$ALT.Allele.Depth))}
+  
+  # genome associated with MG sample
+  i = rush_gen[grep(d, rush_gen$Sample.ID), "real_well_position"]
+  
+  i_present_st = intersect(which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(i, x$tip.label)) > 0}))), nodes_with_LDVs)
+  
+  i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[i_present_st]), names =
+                  sapply(names(unlist(vrefm_st_ldv_id[i_present_st])), FUN = function(x){
+                  strsplit(x, ".", fixed = T)[[1]][2]
+                  }))
+  
+
+
+  temp_df_pos = sapply(unique(ldv_temp_df$LDV.Position), FUN = function(l){
+    
+    alleles = c(structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele.Frequency"], 
+                        names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele.Frequency"], 
+                            names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$LDV.Position)
+  
+  test_node = lapply(vrefm_st_ldv_id, FUN = function(v){#print(v)
+    test_pos = sapply(names(v), FUN = function(p){#print(p)
+    grepl(v[p], temp_df_pos[p])
+    })
+    test_pos
+  })
+  
+    observed_ldvs = sapply(names(which(unlist(test_node) > 0)), FUN = function(x){strsplit(x, ".", fixed = T)[[1]][2]})
+  
+  names(observed_ldvs) = sapply(observed_ldvs, FUN = function(x){
+    ifelse(x %in% names(i_specific_ldvs), "Correct", "Random")
+  })
+
+  observed_ldvs_depth = rbind(observed_ldvs, sapply(observed_ldvs, FUN = function(x){ldv_temp_df[ldv_temp_df$LDV.Position %in% x & ldv_temp_df$ALT.Allele %in% unlist(vrefm_st_ldv_id)[grep(x, unlist(vrefm_st_ldv))], "ALT.Allele.Depth"]}))
+
+  # Possible LDV positions with reads >= 4
+  filt_ldv_temp_df = temp_df[temp_df$LDV.Position %in% vrefm_st_ldv & temp_df$ALT.Allele.Depth < 4, ]
+
+  filt_temp_df_pos = sapply(unique(filt_ldv_temp_df$LDV.Position), FUN = function(l){
+    
+    alleles = c(structure(filt_ldv_temp_df[filt_ldv_temp_df$LDV.Position %in% l, "Reference.Allele.Frequency"], 
+                        names = filt_ldv_temp_df[filt_ldv_temp_df$LDV.Position %in% l, "Reference.Allele"]), 
+                  structure(filt_ldv_temp_df[filt_ldv_temp_df$LDV.Position %in% l,"ALT.Allele.Frequency"], 
+                            names = filt_ldv_temp_df[filt_ldv_temp_df$LDV.Position %in% l,"ALT.Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(filt_temp_df_pos) = unique(filt_ldv_temp_df$LDV.Position)
+  
+  filt_test_node = lapply(vrefm_st_ldv_id, FUN = function(v){#print(v)
+    test_pos = sapply(names(v), FUN = function(p){#print(p)
+    grepl(v[p], filt_temp_df_pos[p])
+    })
+    test_pos
+  })
+  
+  # Plot setup
+  
+par(mfrow = c(1, 3))
+par(mar = c(1, 1, 5, 3))
+  
+# Tip should be constant
+tipcol = rep("transparent", length(phylo$tip.label))
+if (i %in% "715-3"){i = "715"}
+tipcol[!grepl("VRE|CP", phylo$tip.label)] = "lightblue"
+tipcol[phylo$tip.label %in% i] = "orange"
+
+# Plot expected nodes
+expected_nodecol = rep("grey", phylo$Nnode)
+expected_nodecol[as.numeric(i_present_st)] = "red"
+expected_nodecol[nodes_without_LDVs] = "black"
+
+plot(phylo, use.edge.length = F, edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = paste0(d, "\n", "Expected nodes"))
+tiplabels(pch = 21, col = tipcol, cex = .75, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = expected_nodecol)
+
+# Plot observed nodes
+obs_node_ind = names(which(unlist(lapply(test_node[lapply(test_node, length) > 0], FUN = function(x){sum(x)})) > 0))
+obs_nodecol = rep("grey", phylo$Nnode)
+obs_nodecol[as.numeric(obs_node_ind)] = "red"
+obs_nodecol[nodes_without_LDVs] = "black"
+
+plot(phylo, use.edge.length = F, edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = paste0(d, "\n", "Observed nodes [all LDVs]"))
+tiplabels(pch = 21, col = tipcol, cex = .75, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = obs_nodecol)
+
+# Plot filtered observed nodes
+filt_obs_node_ind = names(which(unlist(lapply(filt_test_node[lapply(filt_test_node, length) > 0], FUN = function(x){sum(x)})) > 0))
+filt_obs_nodecol = rep("grey", phylo$Nnode)
+filt_obs_nodecol[as.numeric(filt_obs_node_ind)] = "red"
+filt_obs_nodecol[nodes_without_LDVs] = "black"
+
+plot(phylo, use.edge.length = F, edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16, 
+     main = paste0(d, "\n", "Observed nodes\n[filter < 4 reads]"))
+tiplabels(pch = 21, col = tipcol, cex = .75, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = filt_obs_nodecol)
+
+}
+dev.off()
+```

@@ -1,0 +1,208 @@
+---
+title: "Identifying LDV positions mapped to reference genome (Aus0004) at different spike-in concentrations"
+output: html_document
+---
+
+In the sensitivity analysis, Evan noticed that for isolate 5261-4089-0-RVRE (B), there were more nodes supported by LDVs at 5% vs 10% spike-in concentrations. I also noticed that as concentration goes down, the number of positions mapped goes down. Now want to double check with Ali about which LDVs are present/lost during alignment. 
+
+5261-4089-0-RVRE (B)
+
+Simulations:
+B in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+library(vcfR)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+vrefm = read.dna("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta", format = "fasta")
+
+var_pos = read.csv("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.summary_of_snp_distribution.csv", stringsAsFactors = F, header = T, skip = 3)
+var_pos = t(var_pos)
+colnames(var_pos) = gsub(" ", "", as.character(var_pos["POS", ]))
+
+var_pos2 = var_pos[grep("CHROM|POS|ID|REF|ALT|QUAL|FILTER|INFO|FORMAT", x = rownames(var_pos), invert = T),]
+rownames(var_pos2) = gsub("X", "", rownames(var_pos2))
+rownames(var_pos2) = gsub(".", "-", rownames(var_pos2), fixed = T)
+rownames(var_pos2)[rownames(var_pos2) %in% "CP003351-1"] = "CP003351.1"
+
+iqtree = read.iqtree("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+# remove N and -
+var_pos2 = var_pos2[,apply(var_pos2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+
+# Load in data from different scenarios
+rel_ab_list = list()
+rel_ab_list[["B0.001"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.01"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B5"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["B10"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+```
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+nodes_with_LDVs = names(which(lapply(vrefm_st_ldv_id, length) > 0))
+```
+
+# Quantify LDV-detecting sensitivity at various relative abundances
+# Specifically 5261-4089-0-RVRE
+
+```{r}
+i = c("5261-4089-0-RVRE")
+i_list = list("B10", "B5", "B1", "B0.1", "B0.01", "B0.001")
+
+i_present_st = intersect(which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(i, x$tip.label)) > 0}))), nodes_with_LDVs)
+
+i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[i_present_st]), names =
+                  sapply(names(unlist(vrefm_st_ldv_id[i_present_st])), FUN = function(x){
+                  strsplit(x, ".", fixed = T)[[1]][2]
+                  }))
+
+sample_list = list()
+
+for (q in i_list){print(q)
+  
+  temp_df = rel_ab_list[[q]]
+  
+  colnames(temp_df) = c("LDV Position", "Strain Position", "Ref Allele", "Ref Allele Freq", "ALT Allele", "ALT Allele Freq")
+  
+  temp_df = temp_df[nchar(temp_df$`Ref Allele`) == 1 & nchar(temp_df$`ALT Allele`) == 1,]
+  
+  # subset to only LDV-associated positions
+  ldv_temp_df = temp_df[temp_df$`LDV Position` %in% names(i_specific_ldvs), ]
+  
+  # reorganize df to merge duplicate positions
+  
+  temp_df_pos = sapply(unique(ldv_temp_df$`LDV Position`), FUN = function(l){
+    
+    alleles = c(structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele Freq"], 
+                        names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele Freq"], 
+                            names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$`LDV Position`)
+
+  ldv_mat = matrix(F, nrow = 1, ncol = length(i_specific_ldvs), dimnames = list(NULL, names(i_specific_ldvs)))
+  ldv_mat[which(!names(i_specific_ldvs) %in% names(temp_df_pos))] = NA
+  ldv_mat[colnames(ldv_mat) %in% colnames(ldv_mat)[!is.na(ldv_mat)]] = sapply(colnames(ldv_mat)[!is.na(ldv_mat)], FUN = function(x){
+   temp_df_pos[x] %in% i_specific_ldvs[x]
+  })
+  
+  sample_list[[q]] = ldv_mat
+}
+
+sample_df = do.call(rbind, sample_list)
+
+rownames(sample_df) = names(sample_list)
+
+```
+
+Plot out the tree and accentuate the nodes involved in the particular test isolate
+```{r}
+nodecol = rep("#808080", phylo$Nnode)
+nodecol[as.numeric(i_present_st)] = "red"
+nodecol[lapply(vrefm_st_ldv_id, length) == 0] = "black"
+
+tipcol = rep("black", length(phylo$tip.label))
+tipcol[phylo$tip.label %in% i] = "orange"
+
+nodelab = rep("", phylo$Nnode)
+nodelab[as.numeric(i_present_st)] = i_present_st
+
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_LDV_nodes_5261-4089-0-RVRE_labeled.pdf')
+pdf(file)
+
+plot(phylo, use.edge.length = T,edge.color = "black",  cex = 0.25, show.tip.label =F, pch =16)
+tiplabels(pch = 21, col = tipcol, cex = .5, bg = tipcol)
+nodelabels(col = "red", cex = 0.5, text = nodelab, frame = "none")
+
+dev.off()
+```
+
+
+```{r}
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_LDV_alignment_by_node_and_pos.pdf', sep = "");
+pdf(file)
+
+sample_df_num = sample_df
+sample_df_num[sample_df_num %in% T] = 1
+sample_df_num[is.na(sample_df_num)] = 0
+sample_df_num = apply(sample_df_num, 1:2, as.numeric)
+
+pos_by_node = sapply(names(names(i_specific_ldvs)), FUN = function(x){strsplit(x, ".", fixed = T)[[1]][1]})
+pos_by_node_col_ind = structure(rainbow(length(unique(pos_by_node))), names = unique(pos_by_node))
+pos_by_node_col = sapply(pos_by_node, FUN = function(x){pos_by_node_col_ind[x]})
+
+heatmap3(sample_df_num, Rowv = NA, Colv = NA, scale = "none", ColSideColors = pos_by_node_col, ColSideLabs = "Node",
+         legendfun=function()showLegend(legend = names(pos_by_node_col_ind ),
+lwd = 3,
+cex = 1.1,
+col = pos_by_node_col_ind, title = "Node"
+))
+
+
+dev.off()
+```

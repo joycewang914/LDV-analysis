@@ -1,0 +1,87 @@
+---
+title: "Plot phylogenetic tree with MI + Rush VREfm genomes"
+output: html_document
+---
+
+
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+library(vcfR)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+
+rush_data = read.csv("../Rush_meta_genomics_sample_lookup/96 well map (2).csv", header = T, stringsAsFactors = F)
+
+iqtree = read.iqtree("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+phylo = drop.tip(phylo, phylo$tip.label[grep("Control", phylo$tip.label)])
+```
+
+
+Highlight Rush genomes
+```{r}
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_Michigan+Rush_VREfm_genomes.pdf', sep = "");
+pdf(file)
+
+tipcol = structure(rep("blue", length(phylo$tip.label)), names = phylo$tip.label)
+rush_sample_ind  = names(which(sapply(phylo$tip.label, FUN = function(x){
+  grepl(paste(rush_data$Patient.ID, collapse = "|"), paste0(x))
+})))
+# all Michigan isolates have "VRE" in their sample names - remove those isolates
+rush_sample_ind = rush_sample_ind[!grepl("VRE", rush_sample_ind)]
+
+tipcol[names(tipcol) %in% rush_sample_ind] = "red"
+
+plot(phylo, use.edge.length = T,edge.color = "black",  cex = 0.2, show.tip.label =T, pch =16, 
+     main = "Michigan + Rush VREfm phylogeny")
+tiplabels(pch = 21, col = tipcol, cex = .25, bg = tipcol)
+legend("right", legend  = c("Michigan", "Rush"), fill = c("blue", "red"), bty = "n")
+
+dev.off()
+``` 
+
+Highlight Rush genomes by patient
+```{r}
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_Michigan+Rush_VREfm_genomes_by_patient.pdf', sep = "");
+pdf(file)
+
+tipcol = structure(rep("blue", length(phylo$tip.label)), names = phylo$tip.label)
+ptcol = structure(rainbow(length(unique(rush_data$Patient.ID[!grepl("Control", rush_data$Patient.ID)]))), names = unique(rush_data$Patient.ID[!grepl("Control", rush_data$Patient.ID)]))
+
+rush_patient_sample_ind  = sapply(names(tipcol), FUN = function(x){
+  
+  if(length(strsplit(x, "-")[[1]]) == 4 | x %in% "CP003351"){newcol = "blue"}else{
+  
+  
+  if(grepl(paste(paste0("^", unique(rush_data$Patient.ID)), collapse = "|"), x)){
+    newcol = ptcol[strsplit(x, "-")[[1]][1]]
+  }}
+  newcol
+})
+  
+plot(phylo, use.edge.length = T,edge.color = "black",  cex = 0.2, show.tip.label =T, pch =16, 
+     main = "Michigan + Rush VREfm phylogeny")
+tiplabels(pch = 16, col = rush_patient_sample_ind, cex = .25, bg = tipcol)
+legend("bottom", legend = c("Michigan", names(ptcol)), fill = c("blue", ptcol), cex = .5, ncol = 5, xpd = T, inset= -.1, bty = "n")
+
+dev.off()
+``` 

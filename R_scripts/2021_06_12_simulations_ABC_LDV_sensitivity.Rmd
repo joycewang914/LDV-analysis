@@ -1,0 +1,304 @@
+---
+title: "Benchmarking LDV algorithms with simulated scenarios"
+output: html_document
+---
+
+Detection of multi-strain colonization using lineage-defining variants curated from sequenced clones will be highly robust to sequencing errors and false-positive variant calls due to the strict criteria that known sets of variants at specific positions be present to confirm the presence of a strain.
+
+Previously I have identified ~385 LDVs that differentiate nodes on the MI NH VREfm phylogeny.
+Here we are testing additional scenarios:
+
+To this end, can you please set up another set of simulations using three strains and the same metgenome sample (M):
+6648-4103-0-HVRE (A)
+5261-4089-0-RVRE (B)
+1638-6008-0-RVRE (C)
+Simulations:
+A in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+B in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+C in M at 10%, 5%, 1%, 0.1%, 0.01%, 0.001% abundance
+A + B in M at 10% abundance (5% each)
+A + C in M at 10% abundance (5% each)
+B + C in M at 10% abundance (5% each)
+A + B + C in M at 10% abundance (3.3% each)
+
+```{r load packages}
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+library(vcfR)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r load data, include=FALSE}
+vrefm = read.dna("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta", format = "fasta")
+
+var_pos = read.csv("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.summary_of_snp_distribution.csv", stringsAsFactors = F, header = T, skip = 3)
+var_pos = t(var_pos)
+colnames(var_pos) = gsub(" ", "", as.character(var_pos["POS", ]))
+
+var_pos2 = var_pos[grep("CHROM|POS|ID|REF|ALT|QUAL|FILTER|INFO|FORMAT", x = rownames(var_pos), invert = T),]
+rownames(var_pos2) = gsub("X", "", rownames(var_pos2))
+rownames(var_pos2) = gsub(".", "-", rownames(var_pos2), fixed = T)
+rownames(var_pos2)[rownames(var_pos2) %in% "CP003351-1"] = "CP003351.1"
+
+iqtree = read.iqtree("../genome_alignments/2021_04_12_15_54_54_Aus0004_genome_aln_w_alt_allele_unmapped.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+# remove N and -
+var_pos2 = var_pos2[,apply(var_pos2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+
+# Load in data from different scenarios
+rel_ab_list = list()
+rel_ab_list[["A0.001"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["A0.01"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["A0.1"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["A1"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["A5"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["A10"]] = read.csv("../genome_alignments/MI_simulations/A_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["B0.001"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.01"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["B0.1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B1"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["B5"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["B10"]] = read.csv("../genome_alignments/MI_simulations/B_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["C0.001"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.001perc.csv", stringsAsFactors = F)
+rel_ab_list[["C0.01"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.01perc.csv", stringsAsFactors = F)
+rel_ab_list[["C0.1"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_0.1perc.csv", stringsAsFactors = F)
+rel_ab_list[["C1"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_1perc.csv", stringsAsFactors = F)
+rel_ab_list[["C5"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_5perc.csv", stringsAsFactors = F)
+rel_ab_list[["C10"]] = read.csv("../genome_alignments/MI_simulations/C_LDV_abund_frequency_10perc.csv", stringsAsFactors = F)
+
+rel_ab_list[["AB"]] = read.csv("../genome_alignments/MI_simulations/A_B_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["AC"]] = read.csv("../genome_alignments/MI_simulations/A_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["BC"]] = read.csv("../genome_alignments/MI_simulations/B_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+rel_ab_list[["ABC"]] = read.csv("../genome_alignments/MI_simulations/A_B_C_in_M_LDV_abund_frequency.csv", stringsAsFactors = F)
+
+```
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+nodes_with_LDVs = names(which(lapply(vrefm_st_ldv_id, length) > 0))
+nodes_without_LDVs = vrefm_st_ind[!vrefm_st_ind %in% nodes_with_LDVs]
+
+vrefm_st_ldv = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+```
+
+# Quantify LDV-detecting sensitivity at various relative abundances
+```{r}
+i = c("6648-4103-0-HVRE", "5261-4089-0-RVRE", "1638-6008-0-RVRE")
+i_list = list(A = c("A10", "A5", "A1", "A0.1", "A0.01", "A0.001"),
+              B = c("B10", "B5", "B1", "B0.1", "B0.01", "B0.001"),
+              C = c("C10", "C5", "C1", "C0.1", "C0.01", "C0.001"))
+
+sample_list = list()
+for (p in i){
+  
+  if (p == i[1]){samples = i_list$A}
+  if (p == i[2]){samples = i_list$B}
+  if (p == i[3]){samples = i_list$C}
+  
+  correct_lineage_ldv_pct = list()
+  correct_all_ldv_pct = list()
+  any_ldv_on_correct_node_pct = list()
+
+  for (q in samples){
+  
+  i_present_st = which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(p, x$tip.label)) > 0})))
+  ldv_i_present_st_ind = intersect(i_present_st, nodes_with_LDVs)
+  i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[ldv_i_present_st_ind]), names =
+                              sapply(names(unlist(vrefm_st_ldv_id[ldv_i_present_st_ind])), FUN = function(x){
+                                strsplit(x, ".", fixed = T)[[1]][2]
+                              }))
+
+  temp_df = rel_ab_list[[q]]
+  
+  colnames(temp_df) = c("LDV Position", "Strain Position", "Ref Allele", "Ref Allele Freq", "ALT Allele", "ALT Allele Freq")
+  
+  temp_df = temp_df[nchar(temp_df$`Ref Allele`) == 1 & nchar(temp_df$`ALT Allele`) == 1,]
+  
+  # subset to only LDV-associated positions
+  ldv_temp_df = temp_df[temp_df$`LDV Position` %in% names(i_specific_ldvs), ]
+  
+  # reorganize df to merge duplicate positions
+  
+  temp_df_pos = sapply(unique(ldv_temp_df$`LDV Position`), FUN = function(l){
+    
+    alleles = c(structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele Freq"], 
+                        names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"Ref Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele Freq"], 
+                            names = ldv_temp_df[ldv_temp_df$`LDV Position` %in% l,"ALT Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$`LDV Position`)
+
+  
+  detected_correct_ldv = sapply(names(i_specific_ldvs), FUN = function(x){
+   temp_df_pos[x] %in% i_specific_ldvs[x]
+  })
+
+  pct_detected_correct_ldv = sum(detected_correct_ldv) / length(i_specific_ldvs)
+ 
+  # count number of nodes with any LDV-supporting alleles
+  test_node = sapply(ldv_i_present_st_ind, FUN = function(d){
+    st_ldv = vrefm_st_ldv_id[[d]]
+    st_ldv_pos = names(st_ldv)
+    sum(temp_df_pos[st_ldv_pos] == st_ldv, na.rm = T) > 0
+  })
+  
+  pct_node = sum(test_node, na.rm = T) / length(ldv_i_present_st_ind)
+
+  # subset to all LDV positions
+  all_ldv_temp_df = temp_df[temp_df$`LDV Position` %in% vrefm_st_ldv, ]
+  
+  # reorganize df to merge duplicate positions
+  
+  all_temp_df_pos = sapply(unique(all_ldv_temp_df$`LDV Position`), FUN = function(l){
+    
+    alleles = c(structure(all_ldv_temp_df[all_ldv_temp_df$`LDV Position` %in% l,"Ref Allele Freq"], 
+                        names = all_ldv_temp_df[all_ldv_temp_df$`LDV Position` %in% l,"Ref Allele"]), 
+                  structure(all_ldv_temp_df[all_ldv_temp_df$`LDV Position` %in% l,"ALT Allele Freq"], 
+                            names = all_ldv_temp_df[all_ldv_temp_df$`LDV Position` %in% l,"ALT Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(all_temp_df_pos) = unique(all_ldv_temp_df$`LDV Position`)
+
+  
+  detected_correct_all_ldv = sapply(vrefm_st_ldv, FUN = function(x){
+   all_temp_df_pos[x] %in% unlist(lapply(vrefm_st_ldv_id, FUN = function(y){y[x]}))[!is.na(unlist(lapply(vrefm_st_ldv_id, FUN = function(y){y[x]})))]
+  })
+
+ pct_detected_correct_all_ldv = sum(detected_correct_all_ldv) / length(vrefm_st_ldv)
+ 
+ correct_lineage_ldv_pct[[q]] = pct_detected_correct_ldv
+ correct_all_ldv_pct[[q]] = pct_detected_correct_all_ldv
+ any_ldv_on_correct_node_pct[[q]] = pct_node
+
+}
+sample_list[[p]] = list(correct_lineage_ldv_pct, correct_all_ldv_pct, any_ldv_on_correct_node_pct)
+}
+```
+
+# plot as scatterplots
+```{r}
+
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_LDV_simulations_sensitivity_PPV.pdf', sep = "");
+pdf(file, width = 14)
+
+par(mfrow = c(1, 2))
+pch_shape = structure(c(15, 17, 19), names = names(sample_list))
+pch_col = structure(c("grey", "black", "red"), names = names(sample_list))
+# Lineage-specific LDVs
+plot(0, 0, xlab = "Relative abundance (%)", ylab = "Proportion", xaxt = "n", yaxt = "n", col = "white", xlim = c(1, 6), ylim = c(0, 1), main = "Correct LDVs /\nIsolate-associated LDVs")
+axis(side = 1, at = 1:6, labels = c("10", "5", "1", "0.1", "0.01", "0.001") )
+axis(side = 2, at = seq(0, 1, by = .1), labels = seq(0, 1, by = .1), las= 2)
+for (p in names(sample_list)){
+  lineage_ldv = unlist(sample_list[[p]][[1]])
+  points(lineage_ldv, type = "b", pch = pch_shape[p], col = pch_col[p])
+}
+legend(x = "topright", legend = names(pch_shape), col = pch_col, pch = pch_shape)
+
+# All LDVs
+plot(0, 0, xlab = "Relative abundance (%)", ylab = "Proportion", xaxt = "n", yaxt = "n", col = "white", xlim = c(1, 6), ylim = c(0, 1), main = "Correct LDVs /\nAll LDVs")
+axis(side = 1, at = 1:6, labels = c("10", "5", "1", "0.1", "0.01", "0.001") )
+axis(side = 2, at = seq(0, 1, by = .1), labels = seq(0, 1, by = .1), las= 2)
+for (p in names(sample_list)){
+  lineage_ldv = unlist(sample_list[[p]][[2]])
+  points(lineage_ldv, type = "b", pch = pch_shape[p], col = pch_col[p])
+}
+legend(x = "topright", legend = names(pch_shape), col = pch_col, pch = pch_shape)
+
+dev.off()
+```
+
+For the one on the left - can you plot the fraction of correct nodes where at least one LDV was detected (not counting nodes without any LDVs possible)?
+```{r}
+file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"), '_LDV_simulations_node_with_at_least_one_LDV_allele.pdf', sep = "");
+pdf(file)
+
+pch_shape = structure(c(15, 17, 19), names = names(sample_list))
+pch_col = structure(c("grey", "black", "red"), names = names(sample_list))
+# Lineage-specific LDVs
+plot(0, 0, xlab = "Relative abundance (%)", ylab = "Proportion", xaxt = "n", yaxt = "n", col = "white", xlim = c(1, 6), ylim = c(0, 1), main = "Nodes with at least 1 LDV-supporting allele")
+axis(side = 1, at = 1:6, labels = c("10", "5", "1", "0.1", "0.01", "0.001") )
+axis(side = 2, at = seq(0, 1, by = .1), labels = seq(0, 1, by = .1), las= 2)
+
+for (p in names(sample_list)){
+  lineage_ldv = unlist(sample_list[[p]][[3]])
+  points(lineage_ldv, type = "b", pch = pch_shape[p], col = pch_col[p])
+}
+legend(x = "topright", legend = names(pch_shape), col = pch_col, pch = pch_shape)
+
+dev.off()
+
+
+# code for checking where nodes are
+nodecol = rep("#808080", phylo$Nnode)
+nodecol[as.numeric(names(which(test_node)))] = "red"
+nodecol[nodes_without_LDVs] = "blue"
+
+tipcol = rep("black", length(phylo$tip.label))
+tipcol[phylo$tip.label %in% i] = "orange"
+
+plot(phylo, use.edge.length = T,edge.color = "black",  cex = 0.25, show.tip.label =T, pch =16)
+tiplabels(pch = 21, col = tipcol, cex = .5, bg = tipcol)
+nodelabels(pch = 21, col = "transparent", cex = 0.75, bg = nodecol)
+
+```

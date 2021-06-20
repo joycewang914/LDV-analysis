@@ -1,0 +1,112 @@
+---
+title: "Plot Rush metagenome sequencing depth"
+output: html_document
+---
+
+```{r load packages}
+library(readxl)   
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+readxl function
+```{r}
+read_excel_allsheets <- function(filename, tibble = FALSE) {
+    # I prefer straight data.frames
+    # but if you like tidyverse tibbles (the default with read_excel)
+    # then just pass tibble = TRUE
+    sheets <- readxl::excel_sheets(filename)
+    x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
+    if(!tibble) x <- lapply(x, as.data.frame)
+    names(x) <- sheets
+    x
+}
+
+```
+
+
+```{r load data, include=FALSE}
+rush_metadata_file = "../Rush_meta_genomics_sample_lookup/VRE_sampleID_metagen deID.xlsx"
+
+rush_metadata = read_excel_allsheets(rush_metadata_file)
+
+metagen = rush_metadata$metagen_samples_nseqs
+
+mg_seq = read.csv("../Rush_meta_genomics_sample_lookup/DemuxStats_3381-CB.csv", header = T, stringsAsFactors = F)
+
+mg_samples = mg_seq[grepl("MBR", mg_seq$Description), ]
+```
+
+# merge sequencing read data with metadata
+```{r}
+
+extra_samples = setdiff(mg_samples$Description, metagen$SampleID)
+
+updated_metagen = sapply(extra_samples, FUN = function(x){
+  sample_ids = lapply(rush_metadata, FUN = function(y){
+    sample_id_ind = grep("SampleID", colnames(y))
+    if (length(sample_id_ind) == 0){sample_id = NULL}else{
+      sample_id = y[,sample_id_ind]
+    }
+  })
+  first_worksheet = unlist(lapply(sample_ids, FUN = function(z){sum(grepl(x, z)) > 0}))
+  metadata = rush_metadata[[which(first_worksheet)[1]]][rush_metadata[[which(first_worksheet)[1]]]$SampleID %in% x,]
+  metadata
+})
+
+updated_metagen_df = as.data.frame(t(updated_metagen))
+
+updated_metagen_df$CollectDate = format(as.POSIXct(as.numeric(as.character(updated_metagen_df$CollectDate)), origin = "1970-01-01",tz="Europe/Paris"), "%Y-%m-%d")
+
+sorted_updated_metagen_df = apply(updated_metagen_df, 1, FUN = function(x){
+  info_id = sapply(colnames(rush_metadata$metagen_samples_nseqs), FUN = function(y){
+    if (y %in% colnames(updated_metagen_df)){info = x[y]}else{info = NA}
+    info
+  })
+  do.call(cbind, info_id)
+})
+
+sorted_updated_metagen_df = as.data.frame(t(sorted_updated_metagen_df ), stringsAsFactors = F)
+colnames(sorted_updated_metagen_df) = colnames(rush_metadata$metagen_samples_nseqs)
+
+rush_metagen = rbind(apply(metagen,1:2, as.character), apply(sorted_updated_metagen_df, 1:2, as.character))
+
+rush_metagen_df = as.data.frame(rush_metagen)
+
+rush_metagen_df$MGyield = sapply(rush_metagen_df$SampleID, FUN = function(x){
+  yield =mg_seq[mg_seq$Description %in% x, "Yield_Mbases"]
+  ifelse(length(yield) > 0, yield, NA)
+})
+
+rush_metagen_df_mat = as.matrix(rush_metagen_df)
+
+rush_metagen_df_mat[rush_metagen_df_mat[,"SampleID"] %in% extra_samples, "admid_type"] = sapply(extra_samples, FUN = function(x){
+  sample_type = sapply(names(rush_metadata)[6:8], FUN = function(y){
+    temp_df = rush_metadata[[y]]
+    sum(temp_df$SampleID %in% x)
+  })
+  paste0("VRE_", gsub("SampleID", "", names(which(sample_type == 1))))
+})
+
+rush_metagen_df_mat[rush_metagen_df_mat[,"SampleID"] %in% extra_samples, "VREdetect"] = sapply(extra_samples, FUN = function(x){
+
+  if (rush_metagen_df_mat[rush_metagen_df_mat[,"SampleID"] %in% x, "admid_type"] %in% "VRE_acq"){
+    VRE = sum(grepl("VRE (+)", rush_metadata$SampleIDacq[rush_metadata$SampleIDacq$SampleID %in% x, ]) > 0)
+    if (VRE == 1){VRE = 1}else{VRE = "No indication"}
+  }
+  
+  if (rush_metagen_df_mat[rush_metagen_df_mat[,"SampleID"] %in% x, "admid_type"] %in% "VRE_neg"){
+    VRE = sum(grepl("VRE (+)", rush_metadata$SampleIDneg[rush_metadata$SampleIDneg$SampleID %in% x, ]) > 0)
+  }
+  
+  VRE
+  
+})
+rush_metagen_df_mat[extra_samples, "VREdetect"][rush_metagen_df_mat[extra_samples, "VREdetect"] %in% "0"] = "neg"
+rush_metagen_df_mat[extra_samples, "VREdetect"][rush_metagen_df_mat[extra_samples, "VREdetect"] %in% "1"] = "VRE"
+# write.csv(x = as.data.frame(rush_metagen_df_mat), file = "../Rush_meta_genomics_sample_lookup/2021-06-16_VRE_sampleID_metagen_append_mg_seqs.csv", row.names = F)
+
+# samples present in MG but not metadata
+extra_samples = setdiff(mg_seq$Description, rush_metadata$SampleID)
+extra_rush_samples = extra_samples[grep("MBR", extra_samples)]
+```
