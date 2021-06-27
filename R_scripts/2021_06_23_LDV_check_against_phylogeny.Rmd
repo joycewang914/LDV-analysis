@@ -1,0 +1,225 @@
+---
+title: "Check LDV detection and accuracy with Ali"
+output: html_document
+---
+
+In samples with good coverage, Evan wants to quality-check LDVs:
+1. LDVs we expected to find but did find
+2. LDVs we expected to find but did not find
+3. LDVs we did not expect to find and did find
+
+Two isolates: MBR01454, MBR04877
+
+```{r load packages}
+library(readxl)   
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(geiger)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+Read in metadata
+```{r load data, include=FALSE}
+rush_mgen = read.csv("../Rush_meta_genomics_sample_lookup/2021-06-16_VRE_sampleID_metagen_append_mg_seqs.csv", header = T,stringsAsFactors = F)
+
+rush_gen = read.csv("../Rush_meta_genomics_sample_lookup/96 well map (2).csv", header = T, stringsAsFactors = F)
+
+iqtree = read.iqtree("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+
+rush_platemap = read.csv("../Rush_meta_genomics_sample_lookup/Final Workbook WGS - MiSeq M021217 2021 Run 496 - Snitkin Graifman_platemap.csv", stringsAsFactors = F,  row.names = 1, header = T)
+colnames(rush_platemap) = gsub("X", "", colnames(rush_platemap))
+rush_platemap = gsub("_", "-", as.matrix(rush_platemap))
+
+rush_gen$row = rownames(rush_gen)
+rush_gen$genome_name = apply(rush_gen, 1, FUN = function(x){
+  if (length(rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"], "Patient.ID"]) == 1){new_name = x["Patient.ID"]}else{
+    rows = rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"],]
+    new_name = paste0(x["Patient.ID"], "-", which(rownames(rows) %in% x['row']))
+  }
+  new_name
+})
+rush_gen$real_well_position = c(apply(rush_platemap[1:3, ], 1, FUN = function(x){x}))[1:nrow(rush_gen)]
+rush_gen$real_well_position[25] = "715-3"
+
+read_depth = read.csv("../Rush_meta_genomics_sample_lookup/2021_06_16_VRE_metagenomes_QC_analysis_Final_Coverage (1).csv", header = T, stringsAsFactors = F)
+colnames(read_depth) = gsub("X._", "pct_", colnames(read_depth))
+colnames(read_depth) = gsub("X..", "Num.", colnames(read_depth))
+```
+
+Read in WGS data
+```{r}
+dna = read.dna("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.filtered_polymorphic_sites.fasta", format = "fasta")
+var = read.table("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.summary_of_snp_distribution.vcf")
+
+dna2 = dna
+colnames(dna2) = var$V2
+dna2 = as.character(dna2)
+dna2 = apply(dna2, 1:2, toupper)
+var_pos2 = dna2[,apply(dna2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+```
+
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){print(l)
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+nodes_with_LDVs = names(which(lapply(vrefm_st_ldv_id, length) > 0))
+nodes_without_LDVs = vrefm_st_ind[!vrefm_st_ind %in% nodes_with_LDVs]
+
+vrefm_st_ldv = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+```
+
+# Read in MG data
+```{r}
+filenames <- list.files("../genome_alignments/MBR/read_depths/", pattern="*.csv", full.names=TRUE)
+filenames = c(filenames, "../genome_alignments/MI_simulations/C_LDV_abund_frequency_1perc.csv","../genome_alignments/MI_simulations/C_LDV_abund_frequency_10perc.csv")
+ldf <- lapply(filenames, FUN = function(x){read.csv(x, stringsAsFactors = F, header = T)})
+names(ldf) = c(sapply(sapply(filenames[1:48], FUN = function(x){strsplit(x, "/")[[1]][6]}), FUN = function(y){strsplit(y, "_")[[1]][1]}), "C1pct", "C10pct")
+```
+
+# Generate four-column tables for Ali
+# In addition to the three criteria listed above, include LDV positions found but did not find the right allele
+```{r}
+sample_check = c("MBR01454", "MBR04877", "C1pct", "C10pct")
+
+for (d in sample_check){print(d)
+  
+  # Expected LDVs:
+  if (d %in% c("C1pct", "C10pct")){i = "1638-6008-0-RVRE"}else{
+  i = rush_gen[grep(d, rush_gen$Sample.ID), "real_well_position"]}
+
+  i_present_st = intersect(which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(i, x$tip.label)) > 0}))), nodes_with_LDVs)
+  
+  i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[i_present_st]), names =
+                  sapply(names(unlist(vrefm_st_ldv_id[i_present_st])), FUN = function(x){
+                  strsplit(x, ".", fixed = T)[[1]][2]
+                  }))
+  
+  # All possible LDVs
+  m = ldf[[d]]
+  if (d %in% c("C1pct", "C10pct")){colnames(m) = c("LDV.Position", "Strain.Position", "Reference.Allele", "Reference.Allele.Frequency","ALT.Allele","ALT.Allele.Frequency" )}
+  
+  temp_df = m[nchar(m$Reference.Allele) == 1 & nchar(m$Reference.Allele) == 1,]
+  
+  ldv_temp_df = temp_df[temp_df$LDV.Position %in% vrefm_st_ldv, ]
+  
+  rm(temp_df)
+  
+  
+  # LDVs present & correct
+  temp_df_pos = sapply(unique(ldv_temp_df$LDV.Position), FUN = function(l){
+    
+    alleles = c(structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele.Frequency"], 
+                        names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l, "Reference.Allele"]), 
+                  structure(ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele.Frequency"], 
+                            names = ldv_temp_df[ldv_temp_df$LDV.Position %in% l,"ALT.Allele"]))
+    
+    allele_present = paste(names(which(alleles > 0)), collapse = "/")
+    allele_present
+  })
+  names(temp_df_pos) = unique(ldv_temp_df$LDV.Position)
+
+  # four criteria
+  # Not mapped
+  not_mapped = setdiff(names(i_specific_ldvs), names(temp_df_pos))
+  
+  # Expected and found
+  expected_and_found = sapply(names(i_specific_ldvs)[!names(i_specific_ldvs) %in% not_mapped], FUN = function(x){
+    expected = i_specific_ldvs[x]
+    found = temp_df_pos[x]
+    grepl(expected, found)
+  })
+  
+  expected_and_found_pos = sapply(names(which(expected_and_found)), FUN = function(x){strsplit(x, ".", fixed = T)[[1]][2]})
+  
+  # Expected and not found
+  expected_and_not_found_pos = sapply(names(which(!expected_and_found)), FUN = function(x){strsplit(x, ".", fixed = T)[[1]][2]})
+
+  # Unexpected and found
+  not_expected_and_found_ind = setdiff(names(temp_df_pos), names(i_specific_ldvs)) 
+  not_expected_and_found = sapply(not_expected_and_found_ind, FUN = function(x){
+    unexpected = unlist(vrefm_st_ldv_id)[grep(x, names(unlist(vrefm_st_ldv_id)))]
+    found = temp_df_pos[x]
+    grepl(unexpected, found)
+  })
+  
+  not_expected_and_found_pos = names(which(not_expected_and_found))
+  
+ summary_mat = matrix(nrow = max(length(not_mapped), length(expected_and_found_pos), length(expected_and_not_found_pos), length(not_expected_and_found_pos)), ncol = 4, dimnames = list(NULL, c("Not_mapped", "Expected_and_found", "Expected_and_not_found", "Not_expected_and_found")))
+ 
+ summary_mat[,1] = c(unlist(not_mapped), rep(NA, nrow(summary_mat) - length(not_mapped)))
+ summary_mat[,2] = c(unlist(expected_and_found_pos), rep(NA, nrow(summary_mat) - length(expected_and_found_pos)))
+ summary_mat[,3] = c(unlist(expected_and_not_found_pos), rep(NA, nrow(summary_mat) - length(expected_and_not_found_pos)))
+ summary_mat[,4] = c(unlist(not_expected_and_found_pos), rep(NA, nrow(summary_mat) - length(not_expected_and_found_pos)))
+
+ # Positions of interest
+ file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"),  "_", d, "_LDV_check.txt", sep = "");
+ write.table(x = summary_mat, file = file, quote = F, row.names = F, na = "", sep = "\t")
+ 
+ # Alleles at LDVs (expected and observed)
+ ldv_df = data.frame(LDV = unlist(vrefm_st_ldv_id))
+ ldv_df$Obs = sapply(rownames(ldv_df), FUN = function(f){
+   pos = strsplit(f, ".", fixed = T)[[1]][2]
+   temp_df_pos[pos]
+ })
+ ldv_df$Associated = sapply(rownames(ldv_df), FUN = function(f){
+   pos = strsplit(f, ".", fixed = T)[[1]][2]
+   pos %in% names(i_specific_ldvs)
+ })
+
+ file = paste("../figures/", format(Sys.time(), "%Y-%m-%d"),  "_", d, "_LDV_alleles.txt", sep = "");
+ write.table(x = ldv_df, file = file, quote = F, row.names = T, na = "NA", sep = "\t")
+}
+
+```
+
