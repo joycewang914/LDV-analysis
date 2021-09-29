@@ -1,0 +1,238 @@
+---
+title: "Sharing LDV information with Ali and look into expected/observed and unexpected/observed positions"
+output: html_document
+---
+
+Update:
+https://docs.google.com/presentation/d/1T7POKv5sCeN2nyokwEoZRALQ3y-HL1LpyOj61jCX8Wk/edit#slide=id.ge73eeeb838_0_295
+
+Current diagnostic stats:
+1) Efm relative abundance
+2) Total bacterial reads
+3) %_bases above 1 read
+
+For Ali to examine our data, I need to provide:
+1) All LDV positions
+2) LDVs pertaining to MBR2426, 3024, 2860, and corresponding VREfm genome
+3) Relative abundance of VREfm in each of these samples
+
+```{r load packages}
+library(readxl)   
+library(treeio)
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(heatmap3)
+library(randomcoloR)
+library(phytools)
+library(geiger)
+library(cowplot)
+library(RColorBrewer)
+library(vioplot)
+library(geiger)
+
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+Read in metadata
+```{r load data, include=FALSE}
+rush_mgen = read.csv("../Rush_meta_genomics_sample_lookup/2021-06-16_VRE_sampleID_metagen_append_mg_seqs.csv", header = T,stringsAsFactors = F)
+
+rush_gen = read.csv("../Rush_meta_genomics_sample_lookup/96 well map (2).csv", header = T, stringsAsFactors = F)
+
+iqtree = read.iqtree("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.treefile")
+
+phylo = iqtree@phylo
+phylo$bootstrap = phylo$node.label
+phylo$node.label = c(min(phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2]) - 1, phylo$edge[phylo$edge[,2] > length(phylo$tip.label),2])
+phylo$tip.label[phylo$tip.label %in% "715"] = "715-3"
+
+rush_platemap = read.csv("../Rush_meta_genomics_sample_lookup/Final Workbook WGS - MiSeq M021217 2021 Run 496 - Snitkin Graifman_platemap.csv", stringsAsFactors = F,  row.names = 1, header = T)
+colnames(rush_platemap) = gsub("X", "", colnames(rush_platemap))
+rush_platemap = gsub("_", "-", as.matrix(rush_platemap))
+
+rush_gen$row = rownames(rush_gen)
+rush_gen$genome_name = apply(rush_gen, 1, FUN = function(x){
+  if (length(rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"], "Patient.ID"]) == 1){new_name = x["Patient.ID"]}else{
+    rows = rush_gen[rush_gen$Patient.ID %in% x["Patient.ID"],]
+    new_name = paste0(x["Patient.ID"], "-", which(rownames(rows) %in% x['row']))
+  }
+  new_name
+})
+rush_gen$real_well_position = c(apply(rush_platemap[1:3, ], 1, FUN = function(x){x}))[1:nrow(rush_gen)]
+rush_gen$real_well_position[25] = "715-3"
+
+read_depth = read.csv("../Rush_meta_genomics_sample_lookup/2021_06_16_VRE_metagenomes_QC_analysis_Final_Coverage (1).csv", header = T, stringsAsFactors = F)
+colnames(read_depth) = gsub("X._", "pct_", colnames(read_depth))
+colnames(read_depth) = gsub("X..", "Num.", colnames(read_depth))
+```
+
+Read in WGS data
+```{r}
+dna = read.dna("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.filtered_polymorphic_sites.fasta", format = "fasta")
+var = read.table("../genome_alignments/2021_06_12_16_42_32_Aus0004_genome_aln_w_alt_allele_unmapped_exclude_controls.summary_of_snp_distribution.vcf")
+
+dna2 = dna
+colnames(dna2) = var$V2
+dna2 = as.character(dna2)
+dna2 = apply(dna2, 1:2, toupper)
+var_pos2 = dna2[,apply(dna2, 2, FUN = function(x){sum(x %in% c("N", "-")) == 0})]
+rownames(var_pos2)[rownames(var_pos2) %in% "715"] = "715-3"
+```
+
+
+Determine LDVs based on phylogeny
+```{r generate subtrees}
+vrefm_st = subtrees(phylo)
+
+vrefm_st_vars = lapply(vrefm_st, FUN = function(l){print(l)
+  
+  temp_mat = var_pos2[l$tip.label,]
+
+  shared = apply(temp_mat, 2 , FUN = function(x){length(unique(x)) == 1})
+  
+  uniq_snv = apply(temp_mat[,names(which(shared))] , 2, FUN = function(x){unique(x)})
+  
+  uniq_snv
+})
+
+vrefm_st_ind = 1:length(vrefm_st) 
+
+# specify nucleotide sequence identity
+
+vrefm_st_ldv_id = list()
+
+for (s in vrefm_st_ind){print(s)
+  
+  test_samples = vrefm_st[[s]]$tip.label
+  
+  test_st = vrefm_st_vars[[s]]
+  
+  test_st_uniq_var = sapply(names(test_st), FUN = function(r){
+    
+  test_snv = var_pos2[test_samples, r]
+  
+  if (unique(test_snv) != test_st[r]){stop} # extra check
+  
+  sum(unique(test_snv) %in% names(table(var_pos2[!rownames(var_pos2) %in% test_samples,r]))) == 0
+    
+  })
+  
+  if (length(test_st_uniq_var) == 0){vrefm_st_ldv_id[[as.character(s)]] = NULL}else{
+  vrefm_st_ldv_id[[as.character(s)]] = structure(test_st[names(which(test_st_uniq_var))], names = names(which(test_st_uniq_var)))}
+}
+
+nodes_with_LDVs = names(which(lapply(vrefm_st_ldv_id, length) > 0))
+nodes_without_LDVs = vrefm_st_ind[!vrefm_st_ind %in% nodes_with_LDVs]
+
+vrefm_st_ldv = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+
+node_genome_mat = matrix(NA, nrow = length(phylo$tip.label), ncol = length(vrefm_st), dimnames = list(NULL, 1:length(vrefm_st)))
+
+for (n in 1:length(vrefm_st)){print(n)
+  node_genome_mat[1:length(vrefm_st[[n]]$tip.label),n] = vrefm_st[[n]]$tip.label
+}
+
+# write.table(node_genome_mat, file = "../figures/2021-08-05_VREfm_isolates_by_node.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+
+node_LDV_mat = matrix(NA, nrow = length(vrefm_st_ldv), ncol = length(nodes_with_LDVs), dimnames = list(vrefm_st_ldv, nodes_with_LDVs))
+
+for (l in colnames(node_LDV_mat)){print(l)
+  
+    st_ldv = vrefm_st_ldv_id[[as.character(l)]]
+    node_LDV_mat[names(st_ldv), l] = st_ldv
+}
+node_LDV_mat_with_pos = cbind("Pos" = rownames(node_LDV_mat), node_LDV_mat)
+# write.table(node_LDV_mat_with_pos, file = "../figures/2021-08-05_VREfm_LDV_by_node.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+
+```
+
+
+###
+Subset LDV positions for three MBR samples
+Expected/Observed
+Expected/Not observed
+Not expected/observed
+Not expected/not observed
+
+```{r}
+ldf_check = c("MBR02426", "MBR03024", "MBR02860")
+
+all_ldvs = unlist(vrefm_st_ldv_id)
+names(all_ldvs) = sapply(names(unlist(vrefm_st_ldv_id)), FUN = function(x){strsplit(x = x, split = ".", fixed = T)[[1]][2]})
+all_ldv_df = as.data.frame(all_ldvs)
+
+ldf_check_list = list()
+for (d in ldf_check){print(d)
+  
+   m = ldf[[d]]
+
+  pt = rush_mgen[rush_mgen$SampleID %in% d, "MRBA_patientid"]
+  i = rush_gen[rush_gen$Patient.ID %in% pt & grepl(d, rush_gen$Sample.ID), "real_well_position"]
+  i_present_st = intersect(which(unlist(lapply(vrefm_st, FUN = function(x){sum(grepl(paste(paste0("^", gsub("_", "-", i), "$"), collapse = "|"), x$tip.label)) > 0}))), nodes_with_LDVs)
+  
+  i_specific_ldvs = structure(unlist(vrefm_st_ldv_id[i_present_st]), names =
+                  sapply(names(unlist(vrefm_st_ldv_id[i_present_st])), FUN = function(x){
+                  strsplit(x, ".", fixed = T)[[1]][2]
+                  }))
+    
+  
+  all_ldv_df$Expected = sapply(rownames(all_ldv_df), FUN = function(x){
+    ifelse(x %in% names(i_specific_ldvs), T, F)
+  })
+  
+  all_ldv_df$Observed = sapply(rownames(all_ldv_df), FUN = function(x){
+    presence = NA
+    if (x %in% m$LDV.Position){
+      presence = ifelse(as.character(all_ldv_df[x,"all_ldvs"]) %in% m[m$LDV.Position %in% x, c("Reference.Allele", "ALT.Allele")], T, F)}
+    presence
+  })
+  
+  ldf_check_list[[d]] = all_ldv_df
+  
+  write.table(all_ldv_df, file = paste0("../figures/2021-08-05_VREfm_LDV_", d, "_", i, ".txt"), quote = F, sep = "\t", row.names = T, col.names = T)
+
+}
+```
+
+
+Read in MG data
+```{r}
+filenames <- list.files("../genome_alignments/MBR/read_depths/", pattern="*.csv", full.names=TRUE)
+ldf <- lapply(filenames, FUN = function(x){read.csv(x, stringsAsFactors = F, header = T)})
+names(ldf) = sapply(sapply(filenames, FUN = function(x){strsplit(x, "/")[[1]][6]}), FUN = function(y){strsplit(y, "_")[[1]][1]})
+
+metaphlan_files = list.files("../metaphlan_results/", pattern = "*.txt", full.names = T)
+metaphlan_data = lapply(metaphlan_files, FUN = function(x){y = read.table(x, header = F, stringsAsFactors = F);
+colnames(y) = c("clade_name", "clade_taxid", "relative_abundance", "coverage", "estimated_number_of_reads_from_the_clade");
+y})
+names(metaphlan_data) = sapply(metaphlan_files, FUN = function(x){
+  y = strsplit(x, "/")[[1]][length(strsplit(x, "/")[[1]])]
+  gsub("rel_ab_w_read_stats_profile.txt", "", y)
+}) 
+
+read_depth = read.csv("../Rush_meta_genomics_sample_lookup/2021_06_16_VRE_metagenomes_QC_analysis_Final_Coverage (1).csv", header = T, stringsAsFactors = F)
+colnames(read_depth) = gsub("X._", "pct_", colnames(read_depth))
+colnames(read_depth) = gsub("X..", "Num.", colnames(read_depth))
+```
+
+Proportion between total reads and bacteria reads (with sample names for Ali)
+
+```{r}
+
+# Efm reads in VREfm positive and negative samples
+efm_read_prop = lapply(metaphlan_data[grep(paste(ldf_check, collapse = "|"), names(metaphlan_data))], FUN = function(x){
+  non_bac = x[x$clade_name %in% "UNKNOWN", "estimated_number_of_reads_from_the_clade"]
+  total_bac = x[x$clade_name %in% "k__Bacteria", "estimated_number_of_reads_from_the_clade"]
+  entero = x[grep("g__Enterococcus$", x$clade_name), "estimated_number_of_reads_from_the_clade"]
+  efm = x[grepl("s__Enterococcus_faecium", x$clade_name) , "estimated_number_of_reads_from_the_clade"]
+  
+  if (length(efm) == 0){efm = 0}
+  if (length(entero) == 0){entero = 0}
+  c(non_bac, total_bac, entero, efm)
+})
+
+efm_read_prop_df = do.call(rbind, efm_read_prop)
+colnames(efm_read_prop_df) = c("Unknown", "Bacteria", "Any Enterococcus", "E. faecium")
+```
+
